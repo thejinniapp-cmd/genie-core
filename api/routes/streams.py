@@ -74,11 +74,74 @@ def get_messages(stream_id: str, limit: int = 50, org_id: str = Header(..., alia
 
 @router.post("/{stream_id}/messages")
 def post_message(stream_id: str, body: dict, org_id: str = Header(..., alias="X-Org-Id")):
-    res = _db().table("messages").insert({
+    db = _db()
+    role = body.get("role", "user")
+
+    # Guardar el mensaje
+    res = db.table("messages").insert({
         "org_id": org_id,
         "stream_id": stream_id,
-        "role": body.get("role", "user"),
+        "role": role,
         "content": body.get("content", {}),
         "metadata": body.get("metadata", {}),
     }).execute()
-    return res.data[0] if res.data else {}
+    message = res.data[0] if res.data else {}
+
+    # Si es mensaje del usuario, disparar el agente del stream
+    if role == "user":
+        content = body.get("content", {})
+        text = content.get("text", "") if isinstance(content, dict) else str(content)
+
+        # Buscar agente activo del stream
+        agent_res = (
+            db.table("agents")
+            .select("*")
+            .eq("org_id", org_id)
+            .eq("stream_id", stream_id)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        agent = agent_res.data[0] if agent_res.data else None
+
+        if agent:
+            agent_config = {
+                "system_prompt": agent.get("system_prompt", "Eres Genie, un asistente de operaciones inteligente."),
+                "model_id": agent.get("model_id") or os.environ.get("GENIE_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5"),
+                "temperature": agent.get("temperature", 0.3),
+                "max_tokens": agent.get("max_tokens", 2048),
+                "autonomy_level": agent.get("autonomy_level", "supervised"),
+                "tools": agent.get("tools", []),
+            }
+        else:
+            # Sin agente configurado: Genie Core responde con defaults
+            agent_config = {
+                "system_prompt": (
+                    "Eres Genie, el asistente de operaciones de esta organización. "
+                    "Tienes memoria del contexto del stream y puedes ayudar a orquestar tareas, "
+                    "responder preguntas y ejecutar acciones con las herramientas conectadas."
+                ),
+                "model_id": os.environ.get("GENIE_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5"),
+                "temperature": 0.3,
+                "max_tokens": 2048,
+                "autonomy_level": "supervised",
+                "tools": [],
+            }
+
+        db.table("jobs").insert({
+            "org_id": org_id,
+            "stream_id": stream_id,
+            "agent_id": agent["id"] if agent else None,
+            "agent_type": "prompt",
+            "status": "pending",
+            "input_data": {
+                "message": text,
+                "messages": [{"role": "user", "content": text}],
+                "stream_id": stream_id,
+            },
+            "agent_config": agent_config,
+            "attempt": 1,
+            "priority": 0,
+        }).execute()
+
+    return message

@@ -2,24 +2,8 @@
 agents/prompt_agent.py
 ======================
 Agente ligero que corre 100% dentro de Genie.
-No requiere Railway ni código Python externo.
-
-El usuario define:
-- system_prompt: instrucciones del agente
-- model_id: qué modelo usar
-- tools: qué conectores puede usar
-- temperature, max_tokens
-
-Genie lo ejecuta directamente vía API.
-Cubre el 80% de los casos de uso.
-
-Ejemplos de agentes ligeros:
-- Atención a clientes
-- Resumen ejecutivo diario
-- Clasificación y ruteo de emails
-- Seguimiento de cobranza
-- Generación de contenido
-- Monitoreo de KPIs con alerta
+Recibe un mensaje del stream, lo procesa con Claude y escribe la
+respuesta de vuelta al stream como mensaje de rol "assistant".
 """
 
 import os
@@ -29,25 +13,21 @@ import httpx
 from typing import Any
 
 from agents.base_agent import BaseAgent, HumanReviewRequired
-from core import tenant
 from core.rag.context import get_full_context
 
 log = logging.getLogger("genie.prompt_agent")
 
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 
 class PromptAgent(BaseAgent):
     """
-    Agente que corre basado en un system prompt + tools de conectores.
-
-    La configuración del agente viene de la tabla `agents` en Supabase:
-    - system_prompt
-    - model_id
-    - temperature
-    - max_tokens
-    - tools (lista de conectores disponibles)
-    - autonomy_level: "manual" | "supervised" | "autonomous"
+    Agente que responde mensajes del stream usando Claude.
+    Se dispara automáticamente cuando el usuario escribe en el stream.
     """
 
     agent_id = "prompt_agent"
@@ -58,28 +38,25 @@ class PromptAgent(BaseAgent):
         input_data = job.get("input_data", {})
         stream_id = job.get("stream_id")
 
-        system_prompt = agent_config.get("system_prompt", "Eres un asistente útil.")
-        model_id = agent_config.get("model_id") or os.environ.get("GENIE_DEFAULT_MODEL")
-        temperature = agent_config.get("temperature", 0.3)
-        max_tokens = agent_config.get("max_tokens", 2048)
+        system_prompt = agent_config.get("system_prompt", "Eres Genie, un asistente de operaciones inteligente.")
+        model_id = agent_config.get("model_id") or os.environ.get("GENIE_DEFAULT_MODEL", "claude-sonnet-4-5")
+        temperature = float(agent_config.get("temperature", 0.3))
+        max_tokens = int(agent_config.get("max_tokens", 2048))
         autonomy = agent_config.get("autonomy_level", "supervised")
         tools_config = agent_config.get("tools", [])
 
-        # Enriquecer el system prompt con contexto RAG
+        # Enriquecer system prompt con contexto RAG del stream
         user_message = input_data.get("message", "")
         rag_context = get_full_context(org_id, user_message, stream_id)
         if rag_context:
             system_prompt = f"{system_prompt}\n\n{rag_context}"
 
-        # Construir tools disponibles desde los conectores configurados
+        # Recuperar historial reciente del stream
+        messages = self._get_recent_messages(stream_id, org_id, user_message)
+
         tools = self._build_tools(org_id, tools_config)
 
-        messages = input_data.get("messages") or [
-            {"role": "user", "content": user_message}
-        ]
-
-        # Llamada al modelo vía OpenRouter
-        response = self._call_model(
+        response = self._call_claude(
             model_id=model_id,
             system_prompt=system_prompt,
             messages=messages,
@@ -88,7 +65,6 @@ class PromptAgent(BaseAgent):
             max_tokens=max_tokens,
         )
 
-        # Manejar tool calls si el modelo las retornó
         if response.get("tool_calls"):
             response = self._execute_tool_calls(
                 org_id=org_id,
@@ -102,97 +78,160 @@ class PromptAgent(BaseAgent):
                 autonomy=autonomy,
             )
 
-        # Si es supervised, verificar si necesita aprobación humana
+        reply_text = response.get("content", "")
+
+        # Escribir respuesta de vuelta al stream
+        if reply_text and stream_id:
+            self._write_to_stream(org_id, stream_id, reply_text, job)
+
         if autonomy == "supervised" and response.get("requires_approval"):
             raise HumanReviewRequired(response.get("approval_reason", "Requiere revisión humana"))
 
         return {
-            "response": response.get("content", ""),
+            "response": reply_text,
             "model_used": model_id,
             "tool_calls_made": response.get("tool_calls_made", []),
         }
 
-    def _call_model(
-        self,
-        model_id: str,
-        system_prompt: str,
-        messages: list,
-        tools: list,
-        temperature: float,
-        max_tokens: int,
-    ) -> dict:
-        """Llama al modelo vía OpenRouter."""
+    def _get_recent_messages(self, stream_id: str, org_id: str, current_message: str, limit: int = 20) -> list:
+        """Recupera historial reciente del stream para dar contexto conversacional al modelo."""
+        try:
+            res = (
+                self.supabase
+                .table("messages")
+                .select("role, content")
+                .eq("stream_id", stream_id)
+                .eq("org_id", org_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            history = list(reversed(res.data or []))
+            messages = []
+            for m in history:
+                content = m.get("content", {})
+                text = content.get("text", "") if isinstance(content, dict) else str(content)
+                role = m["role"]
+                # Solo incluir roles válidos para el modelo
+                if text and role in ("user", "assistant"):
+                    messages.append({"role": role, "content": text})
+
+            # Evitar duplicar el mensaje actual si ya está en el historial
+            if messages and messages[-1]["role"] == "user" and messages[-1]["content"] == current_message:
+                return messages
+
+            messages.append({"role": "user", "content": current_message})
+            return messages
+        except Exception as e:
+            log.warning(f"[prompt_agent] Could not load history: {e}")
+            return [{"role": "user", "content": current_message}]
+
+    def _call_claude(self, model_id, system_prompt, messages, tools, temperature, max_tokens) -> dict:
+        """Llama a Claude via Anthropic API. Fallback a OpenRouter si no hay API key."""
+        if ANTHROPIC_API_KEY:
+            return self._call_anthropic(model_id, system_prompt, messages, tools, temperature, max_tokens)
+        elif OPENROUTER_API_KEY:
+            return self._call_openrouter(model_id, system_prompt, messages, tools, temperature, max_tokens)
+        else:
+            raise ValueError("No AI provider configured. Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY.")
+
+    def _call_anthropic(self, model_id, system_prompt, messages, tools, temperature, max_tokens) -> dict:
+        # Normalizar model_id (quitar prefix vendor si viene de otro formato)
+        if "/" in model_id:
+            model_id = model_id.split("/")[-1]
+
         headers = {
-            "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": model_id,
+            "system": system_prompt,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        resp = httpx.post(f"{ANTHROPIC_BASE}/messages", headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        text = ""
+        tool_calls = []
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                text += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id"),
+                    "function": {
+                        "name": block.get("name"),
+                        "arguments": json.dumps(block.get("input", {})),
+                    }
+                })
+
+        return {"content": text, "tool_calls": tool_calls}
+
+    def _call_openrouter(self, model_id, system_prompt, messages, tools, temperature, max_tokens) -> dict:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://genie.ai",
             "X-Title": "Genie",
         }
-
         payload = {
             "model": model_id,
             "messages": [{"role": "system", "content": system_prompt}] + messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-
         if tools:
             payload["tools"] = tools
 
-        resp = httpx.post(
-            f"{OPENROUTER_BASE}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60,
-        )
+        resp = httpx.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
-
-        choice = data["choices"][0]
-        message = choice["message"]
-
+        choice = data["choices"][0]["message"]
         return {
-            "content": message.get("content", ""),
-            "tool_calls": message.get("tool_calls", []),
+            "content": choice.get("content", ""),
+            "tool_calls": choice.get("tool_calls", []),
         }
 
+    def _write_to_stream(self, org_id: str, stream_id: str, text: str, job: dict):
+        """Escribe la respuesta del agente como mensaje en el stream (visible en Workstation)."""
+        try:
+            self.supabase.table("messages").insert({
+                "org_id": org_id,
+                "stream_id": stream_id,
+                "role": "assistant",
+                "content": {"type": "text", "text": text},
+                "metadata": {
+                    "agent_id": job.get("agent_id"),
+                    "job_id": job.get("id"),
+                    "model": job.get("agent_config", {}).get("model_id"),
+                },
+            }).execute()
+            log.info(f"[prompt_agent] Response written to stream {stream_id}")
+        except Exception as e:
+            log.error(f"[prompt_agent] Failed to write response to stream: {e}")
+
     def _build_tools(self, org_id: str, tools_config: list) -> list:
-        """
-        Construye la lista de tools disponibles para el agente.
-        Cada tool corresponde a una acción de un conector conectado.
-        """
-        # TODO: cargar tools dinámicamente desde los conectores MCP configurados
-        # Por ahora retorna lista vacía — se expande en siguiente iteración
+        # TODO: cargar tools dinámicamente desde conectores registrados
         return []
 
-    def _execute_tool_calls(
-        self,
-        org_id: str,
-        job: dict,
-        tool_calls: list,
-        messages: list,
-        model_id: str,
-        system_prompt: str,
-        temperature: float,
-        max_tokens: int,
-        autonomy: str,
-    ) -> dict:
-        """
-        Ejecuta las tool calls que el modelo solicitó y hace una segunda llamada
-        con los resultados para obtener la respuesta final.
-        """
+    def _execute_tool_calls(self, org_id, job, tool_calls, messages, model_id,
+                             system_prompt, temperature, max_tokens, autonomy) -> dict:
         tool_results = []
         tools_made = []
 
         for tc in tool_calls:
             tool_name = tc["function"]["name"]
             tool_args = json.loads(tc["function"].get("arguments", "{}"))
-
             log.info(f"[prompt_agent] Tool call: {tool_name}({tool_args})")
-
-            # Ejecutar la tool via connector executor
             result = self._execute_tool(org_id, tool_name, tool_args)
-
             tool_results.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
@@ -200,12 +239,11 @@ class PromptAgent(BaseAgent):
             })
             tools_made.append({"tool": tool_name, "args": tool_args, "result": result})
 
-        # Segunda llamada con los resultados
         messages_with_results = messages + [
             {"role": "assistant", "tool_calls": tool_calls},
         ] + tool_results
 
-        final = self._call_model(
+        final = self._call_claude(
             model_id=model_id,
             system_prompt=system_prompt,
             messages=messages_with_results,
@@ -217,18 +255,10 @@ class PromptAgent(BaseAgent):
         return final
 
     def _execute_tool(self, org_id: str, tool_name: str, args: dict) -> Any:
-        """
-        Ejecuta una tool (acción de conector) para el org_id dado.
-        Despacha al conector correspondiente.
-        """
-        # Formato del tool_name: "connector_action" ej: "gmail_send_email"
         parts = tool_name.split("_", 1)
         if len(parts) < 2:
             return {"error": f"Invalid tool name: {tool_name}"}
-
-        connector_type = parts[0]
-        action = parts[1]
-
+        connector_type, action = parts[0], parts[1]
         try:
             from core.connectors.executor import execute_connector_action
             return execute_connector_action(org_id, connector_type, action, args)
