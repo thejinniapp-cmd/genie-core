@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import streams, agents, connectors, jobs, rag, skills, users, dashboard
+from api.routes import streams, agents, connectors, jobs, rag, skills, users, dashboard, onboarding
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +51,7 @@ app.include_router(rag.router,        prefix="/api/rag",        tags=["RAG"])
 app.include_router(skills.router,     prefix="/api/skills",     tags=["Skills"])
 app.include_router(users.router,      prefix="/api/users",      tags=["Users"])
 app.include_router(dashboard.router,  prefix="/api/dashboard",  tags=["Dashboard"])
+app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
 
 @app.get("/health")
