@@ -13,7 +13,9 @@ from core.workflows.agent_commands import (
     get_pending_commands,
     mark_command_processed,
     list_agent_keys,
+    is_ai_staff_key,
 )
+from core.workflows.ai_staff_runner import run_ai_staff_command
 
 log = logging.getLogger("genie.workflow_scheduler")
 
@@ -427,8 +429,8 @@ def tick_chief_of_staff(org_id: str, event: Optional[str] = None) -> List[dict]:
 
 def process_agent_command(org_id: str, command_msg: dict) -> dict:
     """
-    Ejecuta un comando pendiente de un agente.
-    Usa el scheduler del módulo correspondiente para realizar el trabajo.
+    Ejecuta un comando pendiente de un agente (módulo o AI Staff).
+    Usa el scheduler del módulo correspondiente o el runner de AI Staff.
     """
     metadata = command_msg.get("metadata") or {}
     agent_key = metadata.get("agent_key")
@@ -439,6 +441,29 @@ def process_agent_command(org_id: str, command_msg: dict) -> dict:
         mark_command_processed(message_id, "failed", error="missing agent_key or command")
         return {"ok": False, "error": "missing agent_key or command"}
 
+    # AI Staff (sales_agent, collector_agent)
+    if is_ai_staff_key(agent_key):
+        if not _ai_staff_enabled(org_id, agent_key):
+            mark_command_processed(message_id, "skipped", result={"reason": "ai_staff not enabled"})
+            return {"ok": True, "status": "skipped", "agent_key": agent_key, "command": command}
+
+        mark_command_processed(message_id, "running")
+        try:
+            result = run_ai_staff_command(org_id, agent_key, command)
+            mark_command_processed(message_id, "completed", result=result)
+            return {
+                "ok": True,
+                "agent_key": agent_key,
+                "command": command,
+                "started": result,
+                "started_count": result.get("actions_created", 0),
+            }
+        except Exception as e:
+            log.error(f"[scheduler] Error processing AI Staff command {agent_key}/{command}: {e}", exc_info=True)
+            mark_command_processed(message_id, "failed", error=str(e))
+            return {"ok": False, "agent_key": agent_key, "command": command, "error": str(e)}
+
+    # Módulos de negocio (collections, inventory, crm, accounting)
     if not _module_enabled(org_id, agent_key):
         mark_command_processed(message_id, "skipped", result={"reason": "module not enabled"})
         return {"ok": True, "status": "skipped", "agent_key": agent_key, "command": command}
@@ -466,11 +491,9 @@ def process_agent_command(org_id: str, command_msg: dict) -> dict:
 
 
 def process_all_pending_commands(org_id: str) -> List[dict]:
-    """Procesa todos los comandos pendientes para todos los agentes."""
+    """Procesa todos los comandos pendientes para todos los agentes y AI Staff."""
     processed = []
     for agent_key in list_agent_keys():
-        if not _module_enabled(org_id, agent_key):
-            continue
         pending = get_pending_commands(org_id, agent_key=agent_key)
         for cmd in pending:
             processed.append(process_agent_command(org_id, cmd))

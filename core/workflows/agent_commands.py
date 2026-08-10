@@ -19,7 +19,15 @@ COMMANDS_BY_AGENT = {
     "inventory": "run_low_stock",
     "crm": "run_stale_deals",
     "accounting": "run_monthly_close",
+    "sales_agent": "run_deals",
+    "collector_agent": "run_overdue",
 }
+
+AI_STAFF_KEYS = {"sales_agent", "collector_agent"}
+
+
+def is_ai_staff_key(agent_key: str) -> bool:
+    return agent_key in AI_STAFF_KEYS
 
 
 def _db():
@@ -32,6 +40,8 @@ def _command_label(agent_key: str, command: str) -> str:
         ("inventory", "run_low_stock"): "Revisar stock bajo y generar órdenes de compra",
         ("crm", "run_stale_deals"): "Reactivar deals estancados",
         ("accounting", "run_monthly_close"): "Cerrar período contable mensual",
+        ("sales_agent", "run_deals"): "Ejecutar seguimiento de deals abiertos",
+        ("collector_agent", "run_overdue"): "Ejecutar cobranza de facturas vencidas",
     }
     return labels.get((agent_key, command), f"{command} para {agent_key}")
 

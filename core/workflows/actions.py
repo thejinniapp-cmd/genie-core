@@ -43,6 +43,30 @@ def _module_enabled(org_id: str, module_key: str) -> bool:
         return False
 
 
+def _ai_staff_enabled(org_id: str, staff_key: str) -> bool:
+    try:
+        row = (
+            _db()
+            .table("organization_ai_staff")
+            .select("enabled")
+            .eq("organization_id", org_id)
+            .eq("staff_key", staff_key)
+            .maybe_single()
+            .execute()
+            .data
+        )
+        return bool(row and row.get("enabled"))
+    except Exception as e:
+        log.warning(f"[actions] Could not check ai staff {staff_key}: {e}")
+        return False
+
+
+AI_STAFF_MODULE_REQUIREMENTS = {
+    "sales_agent": "crm",
+    "collector_agent": "collections",
+}
+
+
 def _get_invoice_with_contact(org_id: str, invoice_id: str):
     return (
         _db()
@@ -865,10 +889,16 @@ def chief_of_staff_orchestrate(org_id: str, input_data: Dict[str, Any]) -> Dict[
 
     commands = []
     for agent_key, command in COMMANDS_BY_AGENT.items():
-        if not _module_enabled(org_id, agent_key):
-            continue
-        if agent_key == "accounting" and not (today == last_day_of_month or force_accounting):
-            continue
+        # AI Staff: requiere que el staff y su módulo asociado estén habilitados
+        if agent_key in AI_STAFF_MODULE_REQUIREMENTS:
+            required_module = AI_STAFF_MODULE_REQUIREMENTS[agent_key]
+            if not _ai_staff_enabled(org_id, agent_key) or not _module_enabled(org_id, required_module):
+                continue
+        else:
+            if not _module_enabled(org_id, agent_key):
+                continue
+            if agent_key == "accounting" and not (today == last_day_of_month or force_accounting):
+                continue
         cmd_msg = post_command(
             org_id=org_id,
             agent_key=agent_key,
