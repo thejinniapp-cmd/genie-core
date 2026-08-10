@@ -34,6 +34,10 @@ class GmailConnector(BaseConnector):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.credentials['access_token']}"}
 
+    def _get_sender_email(self) -> str:
+        """Obtiene el email de la cuenta conectada."""
+        return self.credentials.get("google_email", "")
+
     def send_email(
         self,
         to: str,
@@ -45,6 +49,9 @@ class GmailConnector(BaseConnector):
         msg = MIMEMultipart("alternative")
         msg["To"] = to
         msg["Subject"] = subject
+        sender = self._get_sender_email()
+        if sender:
+            msg["From"] = sender
         msg.attach(MIMEText(body, "html" if html else "plain"))
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -124,6 +131,9 @@ class GmailConnector(BaseConnector):
         msg = MIMEText(body)
         msg["To"] = to
         msg["Subject"] = subject
+        sender = self._get_sender_email()
+        if sender:
+            msg["From"] = sender
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
         resp = httpx.post(

@@ -13,3 +13,6 @@ passlib[bcrypt]>=1.7.4
 pgvector>=0.3.0
 tiktoken>=0.7.0
 python-slugify>=8.0.0
+simpleeval>=1.0.0
+playwright>=1.40.0
+notebooklm-py>=0.7.2

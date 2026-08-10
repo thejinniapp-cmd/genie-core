@@ -14,37 +14,31 @@ Genie es una plataforma SaaS de agentes de IA que opera como el gerente de opera
 genie-core/
 ├── core/               # Motor central
 │   ├── tenant.py       # Resolución de credenciales por organización
-│   ├── executor.py     # Loop principal de jobs
-│   ├── audit.py        # Audit log inmutable
+│   ├── audit.py        # Audit log
+│   ├── workflow_engine.py  # Motor de workflows (lista + panel, aprobaciones)
 │   ├── rag/            # RAG global + por stream
-│   └── connectors/     # Integraciones MCP/API (gmail, drive, crm...)
+│   ├── watchers/       # Watchers (detecta emails nuevos, etc.)
+│   └── connectors/     # Integraciones (gmail, drive, sheets, docs, slides,
+│                       #   calendar, slack, telegram, stripe, hubspot, notebooklm)
 ├── agents/             # Sistema de agentes
 │   ├── base_agent.py   # Clase base — todos los agentes heredan aquí
-│   ├── prompt_agent.py # Agente ligero — solo prompt + conectores
-│   ├── bot_agent.py    # Agente con canal (WhatsApp, Telegram...)
+│   ├── prompt_agent.py # Agente ligero — prompt + conectores
 │   └── workers/        # Workers Python para lógica compleja
-├── skills/             # Marketplace de skills
-│   ├── official/       # Skills oficiales de Genie
-│   └── community/      # Skills subidas por la comunidad
-├── channels/           # Canales de comunicación
-│   ├── telegram.py
-│   ├── whatsapp.py
-│   └── email.py
-├── portal/             # Portal externo (clientes, proveedores)
-│   ├── app.py          # FastAPI app del portal
-│   └── chat.py         # Chat bot del portal
+├── skills/             # Skills de negocio
+│   └── official/       # Skills oficiales de Genie
 ├── api/                # API principal (llamada desde el Workstation)
 │   ├── main.py         # FastAPI app principal
-│   ├── routes/         # Endpoints por dominio
-│   └── middleware/     # Auth, logging, rate limiting
-├── dashboard/          # Métricas y analytics
-│   ├── metrics.py      # KPIs del sistema
-│   └── custom_kpis.py  # KPIs definidos por el usuario
+│   ├── auth.py         # Resolución de identidad/org (JWT Supabase + X-Org-Id dev)
+│   └── routes/         # Endpoints por dominio
 ├── db/                 # Base de datos
-│   └── migrations/     # Migraciones SQL
+│   └── migrations/     # Migraciones SQL iniciales
+├── migrations/         # Migraciones incrementales
 └── docs/               # Documentación
     └── skill_format.md # Spec del formato .md para skills
 ```
+
+Roadmap (aún no existe en código): canales (WhatsApp/email), portal externo
+(clientes/proveedores), custom KPIs, marketplace de skills de comunidad.
 
 ## Stack
 
@@ -54,8 +48,8 @@ genie-core/
 | Base de datos | Supabase (PostgreSQL + pgvector) |
 | Workers | Railway |
 | AI | OpenRouter (Claude, GPT-4o, Gemini, local) |
-| Conectores | MCP protocol |
-| Canales | WhatsApp Business API, Telegram Bot API |
+| Conectores | APIs directas (Google, Slack, Stripe...) |
+| Canales | Telegram Bot API (WhatsApp en roadmap) |
 
 ## Conceptos clave
 
@@ -65,7 +59,7 @@ genie-core/
 
 **Skill** — proceso de negocio preconfigurado. Puede ser un archivo `.md` (prompt + instrucciones) o un worker `.py` (lógica compleja).
 
-**Audit log** — registro inmutable de cada evento del sistema. Cada entrada incluye hash encadenado para garantizar integridad.
+**Audit log** — registro de cada evento del sistema con hash encadenado por entrada (verificación de cadena en `core/audit.py`).
 
 **Autonomía dial** — cada proceso tiene un nivel configurable: `manual` → `supervised` → `autonomous`.
 

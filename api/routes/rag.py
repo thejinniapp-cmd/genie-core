@@ -1,9 +1,11 @@
 """api/routes/rag.py — fuentes RAG por stream u org"""
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import os
 from supabase import create_client
+
+from api.auth import get_current_org
 
 router = APIRouter()
 
@@ -26,15 +28,17 @@ class PropagateBody(BaseModel):
 
 
 @router.get("/")
-def list_rag(stream_id: Optional[str] = None, org_id: str = Header(..., alias="X-Org-Id")):
+def list_rag(stream_id: Optional[str] = None, scope: Optional[str] = None, org_id: str = Depends(get_current_org)):
     q = _db().table("rag_sources").select("*").eq("org_id", org_id)
+    if scope:
+        q = q.eq("scope", scope)
     if stream_id:
         q = q.eq("stream_id", stream_id)
     return q.order("created_at").execute().data or []
 
 
 @router.post("/")
-def add_rag(body: RAGCreate, org_id: str = Header(..., alias="X-Org-Id")):
+def add_rag(body: RAGCreate, org_id: str = Depends(get_current_org)):
     res = _db().table("rag_sources").insert({
         "org_id": org_id,
         "name": body.name,
@@ -48,7 +52,7 @@ def add_rag(body: RAGCreate, org_id: str = Header(..., alias="X-Org-Id")):
 
 
 @router.post("/{source_id}/propagate")
-def propagate_rag(source_id: str, body: PropagateBody, org_id: str = Header(..., alias="X-Org-Id")):
+def propagate_rag(source_id: str, body: PropagateBody, org_id: str = Depends(get_current_org)):
     src = _db().table("rag_sources").select("*").eq("id", source_id).eq("org_id", org_id).single().execute()
     if not src.data:
         raise HTTPException(404, "RAG source not found")
@@ -65,6 +69,6 @@ def propagate_rag(source_id: str, body: PropagateBody, org_id: str = Header(...,
 
 
 @router.delete("/{source_id}")
-def delete_rag(source_id: str, org_id: str = Header(..., alias="X-Org-Id")):
+def delete_rag(source_id: str, org_id: str = Depends(get_current_org)):
     _db().table("rag_sources").delete().eq("id", source_id).eq("org_id", org_id).execute()
     return {"status": "deleted"}

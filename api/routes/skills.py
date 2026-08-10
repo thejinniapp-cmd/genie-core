@@ -1,9 +1,11 @@
 """api/routes/skills.py — catálogo e instalación de skills"""
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 import os
 from supabase import create_client
+
+from api.auth import get_current_org
 
 router = APIRouter()
 
@@ -27,12 +29,11 @@ def list_skills(category: Optional[str] = None):
 
 
 @router.post("/install")
-def install_skill(body: SkillInstall, org_id: str = Header(..., alias="X-Org-Id")):
-    res = _db().table("stream_skills").upsert({
+def install_skill(body: SkillInstall, org_id: str = Depends(get_current_org)):
+    res = _db().table("installed_skills").upsert({
         "org_id": org_id,
         "skill_id": body.skill_id,
         "stream_id": body.stream_id,
         "config": body.config,
-        "enabled": True,
     }, on_conflict="org_id,skill_id,stream_id").execute()
     return res.data[0] if res.data else {}
