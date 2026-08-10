@@ -1,12 +1,17 @@
 """api/routes/ai_staff.py — AI Staff: agentes de ventas y cobrador."""
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Optional
+from typing import Optional, List
 import os
 from datetime import datetime, timezone, date, timedelta
 from supabase import create_client
 
 from core.workflows.scheduler import tick_chief_of_staff
 from core.workflows.actions import get_business_metrics
+from core.workflows.chief_alerts import (
+    check_and_send_alerts,
+    get_alert_settings,
+    upsert_alert_settings,
+)
 from api.auth import get_current_org
 
 router = APIRouter()
@@ -187,3 +192,38 @@ def get_chief_of_staff_metrics(org_id: str = Depends(get_current_org)):
         "staff_key": "chief_of_staff",
         "metrics": get_business_metrics(org_id),
     }
+
+
+class AlertSettingUpdate(BaseModel):
+    metric_key: str
+    threshold: float
+    enabled: bool = True
+
+
+class AlertSettingsPayload(BaseModel):
+    settings: List[AlertSettingUpdate]
+
+
+@router.get("/chief_of_staff/alerts/settings")
+def get_chief_alert_settings(org_id: str = Depends(get_current_org)):
+    """Devuelve la configuración de alertas del Chief of Staff."""
+    if not _staff_enabled(org_id, "chief_of_staff"):
+        raise HTTPException(403, "El AI Staff 'chief_of_staff' no está activado")
+    return {"settings": get_alert_settings(org_id)}
+
+
+@router.post("/chief_of_staff/alerts/settings")
+def update_chief_alert_settings(body: AlertSettingsPayload, org_id: str = Depends(get_current_org)):
+    """Actualiza umbrales y habilitación de alertas del Chief of Staff."""
+    if not _staff_enabled(org_id, "chief_of_staff"):
+        raise HTTPException(403, "El AI Staff 'chief_of_staff' no está activado")
+    updated = upsert_alert_settings(org_id, [s.model_dump() for s in body.settings])
+    return {"updated": updated}
+
+
+@router.post("/chief_of_staff/alerts/check")
+def check_chief_alerts_now(org_id: str = Depends(get_current_org)):
+    """Ejecuta manualmente la revisión de alertas del Chief of Staff."""
+    if not _staff_enabled(org_id, "chief_of_staff"):
+        raise HTTPException(403, "El AI Staff 'chief_of_staff' no está activado")
+    return check_and_send_alerts(org_id)

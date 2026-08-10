@@ -8,6 +8,7 @@ import os
 
 from core.workflow_engine import start_run
 from core.workflows.module_defaults import get_module_template_by_event
+from core.workflows.chief_alerts import check_and_send_alerts
 from core.workflows.agent_commands import (
     get_pending_commands,
     mark_command_processed,
@@ -537,6 +538,13 @@ def tick_org(org_id: str, module_key: Optional[str] = None) -> dict:
         started = tick_fn(org_id)
         result[f"{m}_runs"] = started
         result["total_started"] += len(started)
+
+    # Revisar alertas proactivas del Chief of Staff
+    try:
+        result["alerts"] = check_and_send_alerts(org_id)
+    except Exception as e:
+        log.error(f"[scheduler] Alert check failed for org {org_id}: {e}", exc_info=True)
+        result["alerts"] = {"error": str(e)}
 
     return result
 
