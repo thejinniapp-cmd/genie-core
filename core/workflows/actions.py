@@ -1,7 +1,7 @@
 """core/workflows/actions.py — Acciones deterministas para steps de tipo 'action'"""
 import logging
 from datetime import datetime, timezone, date, timedelta
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from supabase import create_client
 import os
@@ -642,17 +642,38 @@ def _sum_outstanding_and_overdue(org_id: str) -> tuple:
         invoices = (
             _db()
             .table("erp_invoices")
-            .select("status, total, due_date")
+            .select("id, status, total, due_date")
             .eq("org_id", org_id)
             .execute()
             .data
             or []
         )
+        invoice_ids = [inv["id"] for inv in invoices if inv.get("status") in ("sent", "partial")]
+        payments: Dict[str, float] = {}
+        if invoice_ids:
+            rows = (
+                _db()
+                .table("erp_payments")
+                .select("invoice_id, amount")
+                .eq("org_id", org_id)
+                .in_("invoice_id", invoice_ids)
+                .execute()
+                .data
+                or []
+            )
+            for r in rows:
+                payments[r["invoice_id"]] = payments.get(r["invoice_id"], 0.0) + float(r.get("amount") or 0)
+
         for inv in invoices:
-            if inv.get("status") in ("sent", "partial"):
-                outstanding += float(inv.get("total") or 0)
-                if inv.get("due_date") and inv.get("due_date") < today_str:
-                    overdue += float(inv.get("total") or 0)
+            if inv.get("status") not in ("sent", "partial"):
+                continue
+            total = float(inv.get("total") or 0)
+            balance = max(total - payments.get(inv["id"], 0.0), 0)
+            if balance <= 0:
+                continue
+            outstanding += balance
+            if inv.get("due_date") and inv.get("due_date") < today_str:
+                overdue += balance
     except Exception as e:
         log.warning(f"[actions] Could not summarize invoices: {e}")
     return outstanding, overdue
@@ -708,6 +729,11 @@ def _gather_business_metrics(org_id: str) -> Dict[str, Any]:
         "low_stock": _count_low_stock(org_id),
         "monthly_net": _sum_monthly_net(org_id),
     }
+
+
+def get_business_metrics(org_id: str) -> Dict[str, Any]:
+    """Public wrapper for Chief of Staff business metrics."""
+    return _gather_business_metrics(org_id)
 
 
 def _find_stream_id(org_id: str, input_stream_id: Optional[str] = None) -> Optional[str]:

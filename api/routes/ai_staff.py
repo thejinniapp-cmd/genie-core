@@ -5,6 +5,8 @@ import os
 from datetime import datetime, timezone, date, timedelta
 from supabase import create_client
 
+from core.workflows.scheduler import tick_chief_of_staff
+from core.workflows.actions import get_business_metrics
 from api.auth import get_current_org
 
 router = APIRouter()
@@ -163,6 +165,25 @@ def run_ai_staff(staff_key: str, org_id: str = Depends(get_current_org)):
         return {"staff_key": staff_key, "overdue_invoices": len(overdue), "actions_created": created, "actions": actions}
 
     if staff_key == "chief_of_staff":
-        return {"staff_key": staff_key, "message": "Chief of Staff está disponible en el chat principal para coordinar tareas."}
+        try:
+            runs = tick_chief_of_staff(org_id)
+            return {
+                "staff_key": staff_key,
+                "runs_started": runs,
+                "message": "Orquestación diaria ejecutada." if runs else "No se iniciaron runs (staff no habilitado o sin plantillas).",
+            }
+        except Exception as e:
+            raise HTTPException(500, f"Error ejecutando Chief of Staff: {e}")
 
     raise HTTPException(400, f"Staff key '{staff_key}' no soportado")
+
+
+@router.get("/chief_of_staff/metrics")
+def get_chief_of_staff_metrics(org_id: str = Depends(get_current_org)):
+    """Métricas ejecutivas del Chief of Staff: deals, cobranza, inventario y contabilidad."""
+    if not _staff_enabled(org_id, "chief_of_staff"):
+        raise HTTPException(403, "El AI Staff 'chief_of_staff' no está activado")
+    return {
+        "staff_key": "chief_of_staff",
+        "metrics": get_business_metrics(org_id),
+    }
