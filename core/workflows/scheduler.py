@@ -563,3 +563,32 @@ def tick_all() -> List[dict]:
             log.error(f"[scheduler] Tick failed for org {org_id}: {e}", exc_info=True)
             results.append({"org_id": org_id, "error": str(e)})
     return results
+
+
+# ── Helpers reactivos para rutas de la API ────────────────────────────────────
+
+MODULE_TICK_FNS = {
+    "collections": tick_collections,
+    "crm": tick_crm,
+    "inventory": tick_inventory,
+    "accounting": tick_accounting,
+}
+
+
+def schedule_module_tick(org_id: str, module_key: str, background_tasks=None):
+    """
+    Ejecuta un tick del módulo correspondiente. Si se pasa `background_tasks`,
+    se programa para correr después de responder al cliente (non-blocking).
+    """
+    tick_fn = MODULE_TICK_FNS.get(module_key)
+    if not tick_fn:
+        log.warning(f"[scheduler] No tick function for module {module_key}")
+        return
+    if background_tasks is not None:
+        background_tasks.add_task(tick_fn, org_id)
+        log.info(f"[scheduler] Scheduled {module_key} tick for org {org_id}")
+    else:
+        try:
+            tick_fn(org_id)
+        except Exception as e:
+            log.error(f"[scheduler] {module_key} tick failed for org {org_id}: {e}", exc_info=True)

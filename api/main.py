@@ -31,10 +31,23 @@ async def lifespan(app: FastAPI):
         start_watcher_service()
     except Exception as e:
         log.warning(f"Watcher service failed to start: {e}")
+
+    # Arrancar el scheduler del Chief of Staff (tick periódico autónomo)
+    try:
+        from core.workflows.scheduler_runner import start_scheduler, stop_scheduler
+        start_scheduler()
+    except Exception as e:
+        log.warning(f"Chief of Staff scheduler failed to start: {e}")
+
     yield
+
     log.info("Genie API shutting down.")
     try:
         stop_watcher_service()
+    except Exception:
+        pass
+    try:
+        stop_scheduler()
     except Exception:
         pass
 

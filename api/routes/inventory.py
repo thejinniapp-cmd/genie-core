@@ -1,5 +1,5 @@
 """api/routes/inventory.py — Inventario + Compras."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List
 import os
@@ -7,6 +7,7 @@ from datetime import datetime, timezone, date
 from supabase import create_client
 
 from api.auth import get_current_org
+from core.workflows.scheduler import schedule_module_tick
 
 router = APIRouter()
 
@@ -69,7 +70,7 @@ def list_items(org_id: str = Depends(get_current_org)):
 
 
 @router.post("/items")
-def create_item(body: ItemCreate, org_id: str = Depends(get_current_org)):
+def create_item(body: ItemCreate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_inventory_enabled(org_id)
     data = body.model_dump(exclude_unset=True)
     data["org_id"] = org_id
@@ -77,17 +78,19 @@ def create_item(body: ItemCreate, org_id: str = Depends(get_current_org)):
         res = _db().table("inventory_items").insert(data).execute()
     except Exception as e:
         raise HTTPException(409, f"SKU duplicado o error de integridad: {e}")
+    schedule_module_tick(org_id, "inventory", background_tasks)
     return res.data[0]
 
 
 @router.patch("/items/{item_id}")
-def update_item(item_id: str, body: ItemUpdate, org_id: str = Depends(get_current_org)):
+def update_item(item_id: str, body: ItemUpdate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_inventory_enabled(org_id)
     data = body.model_dump(exclude_unset=True)
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     res = _db().table("inventory_items").update(data).eq("id", item_id).eq("org_id", org_id).execute()
     if not res.data:
         raise HTTPException(404, "Artículo no encontrado")
+    schedule_module_tick(org_id, "inventory", background_tasks)
     return res.data[0]
 
 
@@ -224,7 +227,7 @@ def create_purchase_order(body: PurchaseOrderCreate, org_id: str = Depends(get_c
 
 
 @router.post("/purchase-orders/{po_id}/receive")
-def receive_purchase_order(po_id: str, org_id: str = Depends(get_current_org)):
+def receive_purchase_order(po_id: str, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_inventory_enabled(org_id)
     db = _db()
     po = db.table("inventory_purchase_orders").select("*").eq("id", po_id).eq("org_id", org_id).single().execute().data
@@ -258,6 +261,7 @@ def receive_purchase_order(po_id: str, org_id: str = Depends(get_current_org)):
         db.table("inventory_purchase_order_items").update({"received_qty": line.get("quantity"), "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", line["id"]).execute()
 
     db.table("inventory_purchase_orders").update({"status": "received", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", po_id).execute()
+    schedule_module_tick(org_id, "inventory", background_tasks)
     return {"status": "received"}
 
 
@@ -310,7 +314,7 @@ def list_stock_movements(item_id: Optional[str] = None, org_id: str = Depends(ge
 
 
 @router.post("/stock-movements")
-def create_stock_movement(body: StockMovementCreate, org_id: str = Depends(get_current_org)):
+def create_stock_movement(body: StockMovementCreate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_inventory_enabled(org_id)
     db = _db()
     item = db.table("inventory_items").select("current_stock").eq("id", body.item_id).eq("org_id", org_id).single().execute().data
@@ -331,6 +335,7 @@ def create_stock_movement(body: StockMovementCreate, org_id: str = Depends(get_c
         "reason": body.reason,
         "reference": body.reference,
     }).execute()
+    schedule_module_tick(org_id, "inventory", background_tasks)
     return res.data[0]
 
 

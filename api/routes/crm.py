@@ -1,5 +1,5 @@
 """api/routes/crm.py — CRM base: empresas, contactos, deals y actividades."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import os
@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from supabase import create_client
 
 from api.auth import get_current_org
-from core.workflows.scheduler import start_event_run
+from core.workflows.scheduler import start_event_run, schedule_module_tick
 
 router = APIRouter()
 log = logging.getLogger("genie.crm")
@@ -292,7 +292,7 @@ def list_deals(pipeline_id: Optional[str] = None, stage_id: Optional[str] = None
 
 
 @router.post("/deals")
-def create_deal(body: DealCreate, org_id: str = Depends(get_current_org)):
+def create_deal(body: DealCreate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_crm_enabled(org_id)
     data = body.model_dump(exclude_unset=True)
     data["org_id"] = org_id
@@ -311,6 +311,7 @@ def create_deal(body: DealCreate, org_id: str = Depends(get_current_org)):
     except Exception as e:
         log.warning(f"[crm] Could not trigger new_deal workflow: {e}")
 
+    schedule_module_tick(org_id, "crm", background_tasks)
     return deal
 
 
@@ -324,13 +325,14 @@ def get_deal(deal_id: str, org_id: str = Depends(get_current_org)):
 
 
 @router.patch("/deals/{deal_id}")
-def update_deal(deal_id: str, body: DealUpdate, org_id: str = Depends(get_current_org)):
+def update_deal(deal_id: str, body: DealUpdate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_crm_enabled(org_id)
     data = body.model_dump(exclude_unset=True)
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     res = _db().table("crm_deals").update(data).eq("id", deal_id).eq("org_id", org_id).execute()
     if not res.data:
         raise HTTPException(404, "Oportunidad no encontrada")
+    schedule_module_tick(org_id, "crm", background_tasks)
     return res.data[0]
 
 

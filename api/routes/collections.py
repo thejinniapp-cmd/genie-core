@@ -1,5 +1,5 @@
 """api/routes/collections.py — Cobranza + Facturación"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List
 import os
@@ -7,7 +7,7 @@ from datetime import datetime, timezone, date
 from supabase import create_client
 
 from api.auth import get_current_org
-from core.workflows.scheduler import start_event_run
+from core.workflows.scheduler import start_event_run, schedule_module_tick
 
 router = APIRouter()
 
@@ -179,22 +179,24 @@ def get_invoice(invoice_id: str, org_id: str = Depends(get_current_org)):
 
 
 @router.patch("/invoices/{invoice_id}")
-def update_invoice(invoice_id: str, body: InvoiceUpdate, org_id: str = Depends(get_current_org)):
+def update_invoice(invoice_id: str, body: InvoiceUpdate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_collections_enabled(org_id)
     data = body.model_dump(exclude_unset=True)
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     res = _db().table("erp_invoices").update(data).eq("id", invoice_id).eq("org_id", org_id).execute()
     if not res.data:
         raise HTTPException(404, "Factura no encontrada")
+    schedule_module_tick(org_id, "collections", background_tasks)
     return res.data[0]
 
 
 @router.post("/invoices/{invoice_id}/send")
-def send_invoice(invoice_id: str, org_id: str = Depends(get_current_org)):
+def send_invoice(invoice_id: str, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_collections_enabled(org_id)
     res = _db().table("erp_invoices").update({"status": "sent", "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", invoice_id).eq("org_id", org_id).execute()
     if not res.data:
         raise HTTPException(404, "Factura no encontrada")
+    schedule_module_tick(org_id, "collections", background_tasks)
     return res.data[0]
 
 
@@ -219,7 +221,7 @@ class PaymentCreate(BaseModel):
 
 
 @router.post("/payments")
-def create_payment(body: PaymentCreate, org_id: str = Depends(get_current_org)):
+def create_payment(body: PaymentCreate, background_tasks: BackgroundTasks, org_id: str = Depends(get_current_org)):
     _ensure_collections_enabled(org_id)
 
     invoice = _db().table("erp_invoices").select("total").eq("id", body.invoice_id).eq("org_id", org_id).single().execute().data
@@ -276,6 +278,8 @@ def create_payment(body: PaymentCreate, org_id: str = Depends(get_current_org)):
         )
     except Exception as e:
         log.warning(f"[collections] Could not trigger payment_received_accounting workflow: {e}")
+
+    schedule_module_tick(org_id, "collections", background_tasks)
 
     return res.data[0]
 
