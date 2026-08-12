@@ -22,6 +22,12 @@ DEFAULT_ALERTS = {
     "low_stock": {"threshold": 0, "enabled": True, "is_lower_bound": False},
     "outstanding": {"threshold": 100000, "enabled": True, "is_lower_bound": False},
     "monthly_net": {"threshold": 0, "enabled": True, "is_lower_bound": True},
+    "budget_variance_pct": {"threshold": 20, "enabled": True, "is_lower_bound": False},
+    "founder_dependency_pct": {"threshold": 50, "enabled": True, "is_lower_bound": False},
+    "runway_weeks": {"threshold": 4, "enabled": True, "is_lower_bound": True},
+    "customer_concentration_pct": {"threshold": 30, "enabled": True, "is_lower_bound": False},
+    "fiscal_obligations_due_soon": {"threshold": 0, "enabled": True, "is_lower_bound": False},
+    "cfdi_audit_findings_count": {"threshold": 0, "enabled": True, "is_lower_bound": False},
 }
 
 
@@ -256,12 +262,22 @@ def _metric_label(metric_key: str) -> str:
         "low_stock": "Stock bajo",
         "outstanding": "Cuentas por cobrar",
         "monthly_net": "Neto mensual",
+        "budget_variance_pct": "Desviación de presupuesto",
+        "founder_dependency_pct": "Dependencia del founder",
+        "runway_weeks": "Runway de caja",
+        "customer_concentration_pct": "Concentración de clientes",
+        "fiscal_obligations_due_soon": "Obligaciones fiscales por vencer",
+        "cfdi_audit_findings_count": "Hallazgos de auditoría CFDI",
     }.get(metric_key, metric_key)
 
 
 def _format_value(metric_key: str, value: float) -> str:
     if metric_key in ("overdue", "outstanding", "monthly_net"):
         return f"${value:,.2f}"
+    if metric_key in ("budget_variance_pct", "founder_dependency_pct", "customer_concentration_pct"):
+        return f"{value:.1f}%"
+    if metric_key == "runway_weeks":
+        return f"{value:.1f} semanas"
     return f"{int(value)}"
 
 

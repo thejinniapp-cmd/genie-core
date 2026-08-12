@@ -13,7 +13,7 @@ from core.workflows.chief_alerts import (
     get_alert_settings,
     upsert_alert_settings,
 )
-from core.workflows.ai_staff_runner import run_sales_agent, run_collector_agent
+from core.workflows.ai_staff_runner import run_sales_agent, run_collector_agent, run_budget_agent, run_compliance_agent
 from api.auth import get_current_org
 
 router = APIRouter()
@@ -90,6 +90,16 @@ def run_ai_staff(staff_key: str, org_id: str = Depends(get_current_org)):
         if not _module_enabled(org_id, "collections"):
             raise HTTPException(403, "El agente cobrador requiere el módulo Cobranza activado")
         return run_collector_agent(org_id)
+
+    if staff_key == "budget_agent":
+        if not _module_enabled(org_id, "control"):
+            raise HTTPException(403, "El agente de presupuesto requiere el módulo Genie Control activado")
+        return run_budget_agent(org_id)
+
+    if staff_key == "compliance_agent":
+        if not _module_enabled(org_id, "cumple"):
+            raise HTTPException(403, "El agente de cumplimiento requiere el módulo Genie Cumple activado")
+        return run_compliance_agent(org_id)
 
     if staff_key == "chief_of_staff":
         try:

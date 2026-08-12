@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Carga .env siempre, independiente de cómo se inicia uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import streams, agents, connectors, jobs, rag, skills, users, dashboard, onboarding, google_oauth, notifications, audit, adn, workflows, notebooklm_routes, marketplace, crm, collections, accounting, inventory, ai_staff, data_room, rituals
+from api.routes import streams, agents, connectors, jobs, rag, skills, users, dashboard, onboarding, google_oauth, notifications, audit, adn, workflows, notebooklm_routes, marketplace, crm, collections, accounting, inventory, ai_staff, data_room, rituals, control, cash, cumple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,7 +89,10 @@ app.include_router(notebooklm_routes.router, prefix="/api/connectors/notebooklm"
 app.include_router(marketplace.router,      prefix="/api/marketplace", tags=["Marketplace"])
 app.include_router(crm.router,             prefix="/api/crm",      tags=["CRM"])
 app.include_router(collections.router,     prefix="/api/collections", tags=["Collections"])
+app.include_router(cash.router,            prefix="/api/cash", tags=["Cash"])
+app.include_router(cumple.router,          prefix="/api/cumple", tags=["Cumple"])
 app.include_router(accounting.router,     prefix="/api/accounting", tags=["Accounting"])
+app.include_router(control.router,        prefix="/api/control", tags=["Control"])
 app.include_router(inventory.router,       prefix="/api/inventory", tags=["Inventory"])
 app.include_router(ai_staff.router,        prefix="/api/ai-staff", tags=["AI Staff"])
 app.include_router(data_room.router,       prefix="/api/data-room", tags=["Data Room"])

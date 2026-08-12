@@ -10,7 +10,33 @@ from typing import Any, Dict, List
 
 from supabase import create_client
 
+from core.workflows.actions import control_budget_weekly_review, cumple_weekly_check
+from core.connectors.executor import execute_connector_action
+
 log = logging.getLogger("genie.ai_staff_runner")
+
+REMINDER_TEMPLATES = {
+    1: {
+        "subject": "Recordatorio: factura {invoice_number} pendiente de pago",
+        "body": (
+            "Hola {first_name},\n\n"
+            "Te escribimos para recordarte que la factura {invoice_number} por ${total:,.2f} "
+            "está pendiente de pago desde el {due_date}. Si ya la pagaste, ignora este mensaje.\n\n"
+            "Saludos."
+        ),
+        "telegram": "Hola {first_name}, la factura {invoice_number} por ${total:,.2f} está pendiente de pago. ¿Nos ayudas a confirmarla?",
+    },
+    2: {
+        "subject": "Factura {invoice_number} vencida hace más de una semana",
+        "body": (
+            "Hola {first_name},\n\n"
+            "La factura {invoice_number} por ${total:,.2f}, con vencimiento el {due_date}, "
+            "sigue pendiente. Te pedimos regularizarla a la brevedad para evitar interrupciones en el servicio.\n\n"
+            "Quedamos atentos."
+        ),
+        "telegram": "Aviso importante: la factura {invoice_number} (${total:,.2f}) lleva más de una semana vencida. Por favor regulariza tu pago.",
+    },
+}
 
 
 def _db():
@@ -103,59 +129,140 @@ def run_sales_agent(org_id: str) -> Dict[str, Any]:
     return {"staff_key": "sales_agent", "actions_created": created, "actions": actions}
 
 
+def _reminder_tier_for_days(days_overdue: int) -> int:
+    if days_overdue >= 15:
+        return 3
+    if days_overdue >= 8:
+        return 2
+    if days_overdue >= 1:
+        return 1
+    return 0
+
+
+def _send_invoice_reminder(org_id: str, invoice: Dict[str, Any], contact: Dict[str, Any], tier: int) -> Dict[str, Any]:
+    template = REMINDER_TEMPLATES.get(tier)
+    if not template:
+        return {"email_sent": False, "telegram_sent": False}
+
+    ctx = {
+        "first_name": contact.get("first_name") or "",
+        "invoice_number": invoice.get("invoice_number", "S/N"),
+        "total": float(invoice.get("total") or 0),
+        "due_date": invoice.get("due_date") or "N/A",
+    }
+
+    email_sent = False
+    email = contact.get("email")
+    if email:
+        try:
+            execute_connector_action(org_id, "gmail", "send_email", {
+                "to": email,
+                "subject": template["subject"].format(**ctx),
+                "body": template["body"].format(**ctx),
+            })
+            email_sent = True
+        except Exception as e:
+            log.warning(f"[ai_staff_runner] Could not send email reminder for invoice {invoice.get('id')}: {e}")
+
+    telegram_sent = False
+    chat_id = (contact.get("metadata") or {}).get("telegram_chat_id")
+    if chat_id:
+        try:
+            execute_connector_action(org_id, "telegram", "send_message", {
+                "chat_id": chat_id,
+                "text": template["telegram"].format(**ctx),
+            })
+            telegram_sent = True
+        except Exception as e:
+            log.warning(f"[ai_staff_runner] Could not send telegram reminder for invoice {invoice.get('id')}: {e}")
+
+    return {"email_sent": email_sent, "telegram_sent": telegram_sent}
+
+
 def run_collector_agent(org_id: str) -> Dict[str, Any]:
-    """Revisa facturas vencidas y crea tareas de cobranza en CRM."""
+    """
+    Revisa facturas vencidas y ejecuta la secuencia de cobranza:
+    tier 1 (1-7 días) y tier 2 (8-14 días) envían recordatorio real por email
+    (y Telegram si el contacto tiene chat_id guardado); tier 3 (15+ días)
+    escala a una tarea humana en CRM en vez de seguir insistiendo por bot.
+    """
     if not _staff_enabled(org_id, "collector_agent"):
         return {"ok": False, "reason": "collector_agent not enabled"}
     if not _module_enabled(org_id, "collections"):
         return {"ok": False, "reason": "collections module not enabled"}
 
-    today = date.today().isoformat()
+    today = date.today()
     invoices = (
         _db()
         .table("erp_invoices")
-        .select("id, invoice_number, total, due_date, status, contact_id, crm_contacts(first_name,last_name)")
+        .select("id, invoice_number, total, due_date, status, contact_id, metadata, crm_contacts(first_name,last_name,email,metadata)")
         .eq("org_id", org_id)
         .execute()
         .data
         or []
     )
 
-    overdue = []
-    for inv in invoices:
-        if inv.get("status") == "overdue" or (
-            inv.get("status") in ("sent", "partial")
-            and inv.get("due_date")
-            and inv.get("due_date") < today
-        ):
-            overdue.append(inv)
+    overdue = [
+        inv for inv in invoices
+        if inv.get("status") in ("sent", "partial") and inv.get("due_date") and inv["due_date"] < today.isoformat()
+    ]
 
     created = 0
     actions = []
     for inv in overdue:
         contact = inv.get("crm_contacts") or {}
-        subject = f"Cobrar factura {inv['invoice_number']}"
-        notes = (
-            f"El Agente Cobrador detectó que la factura {inv['invoice_number']} "
-            f"por ${float(inv['total']):,.2f} está vencida. "
-            f"Contactar a {contact.get('first_name') or ''} {contact.get('last_name') or ''}."
-        )
-        try:
+        days_overdue = (today - date.fromisoformat(inv["due_date"])).days
+        target_tier = _reminder_tier_for_days(days_overdue)
+        current_tier = int((inv.get("metadata") or {}).get("reminder_tier") or 0)
+
+        if target_tier <= current_tier:
+            continue  # ya se contactó en este tier (o uno mayor)
+
+        result_entry = {
+            "invoice_id": inv["id"],
+            "invoice_number": inv["invoice_number"],
+            "total": inv["total"],
+            "days_overdue": days_overdue,
+            "tier": target_tier,
+        }
+
+        if target_tier >= 3:
+            subject = f"Llamar a cliente: cobranza automática no funcionó — factura {inv['invoice_number']}"
+            notes = (
+                f"La factura {inv['invoice_number']} por ${float(inv['total']):,.2f} lleva {days_overdue} días vencida "
+                f"y no hubo respuesta a los recordatorios automáticos. Contactar a "
+                f"{contact.get('first_name') or ''} {contact.get('last_name') or ''} por teléfono."
+            )
             if _module_enabled(org_id, "crm"):
-                _db().table("crm_activities").insert({
-                    "org_id": org_id,
-                    "contact_id": inv.get("contact_id"),
-                    "activity_type": "task",
-                    "subject": subject,
-                    "notes": notes,
-                    "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
-                    "status": "pending",
-                    "metadata": {"source": "ai_staff", "staff_key": "collector_agent", "invoice_id": inv["id"]},
-                }).execute()
-            created += 1
-            actions.append({"invoice_id": inv["id"], "invoice_number": inv["invoice_number"], "total": inv["total"], "subject": subject})
+                try:
+                    _db().table("crm_activities").insert({
+                        "org_id": org_id,
+                        "contact_id": inv.get("contact_id"),
+                        "activity_type": "task",
+                        "subject": subject,
+                        "notes": notes,
+                        "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                        "status": "pending",
+                        "metadata": {"source": "ai_staff", "staff_key": "collector_agent", "invoice_id": inv["id"], "escalated": True},
+                    }).execute()
+                except Exception as e:
+                    log.warning(f"[ai_staff_runner] Could not create escalation activity for invoice {inv['id']}: {e}")
+            result_entry["escalated"] = True
+        else:
+            result_entry.update(_send_invoice_reminder(org_id, inv, contact, target_tier))
+
+        try:
+            new_metadata = {
+                **(inv.get("metadata") or {}),
+                "reminder_tier": target_tier,
+                "last_reminder_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _db().table("erp_invoices").update({"metadata": new_metadata}).eq("id", inv["id"]).execute()
         except Exception as e:
-            actions.append({"invoice_id": inv["id"], "error": str(e)})
+            log.warning(f"[ai_staff_runner] Could not update reminder state for invoice {inv['id']}: {e}")
+
+        created += 1
+        actions.append(result_entry)
 
     return {
         "staff_key": "collector_agent",
@@ -165,9 +272,44 @@ def run_collector_agent(org_id: str) -> Dict[str, Any]:
     }
 
 
+def run_budget_agent(org_id: str) -> Dict[str, Any]:
+    """Compara presupuesto vs. real del mes en curso y reporta desviaciones."""
+    if not _staff_enabled(org_id, "budget_agent"):
+        return {"ok": False, "reason": "budget_agent not enabled"}
+    if not _module_enabled(org_id, "control"):
+        return {"ok": False, "reason": "control module not enabled"}
+
+    result = control_budget_weekly_review(org_id, {})
+    deviations = result.get("deviations") or []
+
+    return {
+        "staff_key": "budget_agent",
+        "actions_created": len(deviations),
+        "actions": deviations,
+    }
+
+
+def run_compliance_agent(org_id: str) -> Dict[str, Any]:
+    """Revisa el calendario fiscal y audita los CFDI importados."""
+    if not _staff_enabled(org_id, "compliance_agent"):
+        return {"ok": False, "reason": "compliance_agent not enabled"}
+    if not _module_enabled(org_id, "cumple"):
+        return {"ok": False, "reason": "cumple module not enabled"}
+
+    result = cumple_weekly_check(org_id, {})
+
+    return {
+        "staff_key": "compliance_agent",
+        "actions_created": result.get("due_soon_count", 0) + result.get("audit_findings_count", 0),
+        "actions": result.get("findings", []),
+    }
+
+
 AI_STAFF_RUNNERS = {
     "sales_agent": run_sales_agent,
     "collector_agent": run_collector_agent,
+    "budget_agent": run_budget_agent,
+    "compliance_agent": run_compliance_agent,
 }
 
 

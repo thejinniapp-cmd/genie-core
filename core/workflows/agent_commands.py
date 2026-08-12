@@ -21,9 +21,11 @@ COMMANDS_BY_AGENT = {
     "accounting": "run_monthly_close",
     "sales_agent": "run_deals",
     "collector_agent": "run_overdue",
+    "budget_agent": "run_budget_review",
+    "compliance_agent": "run_compliance_check",
 }
 
-AI_STAFF_KEYS = {"sales_agent", "collector_agent"}
+AI_STAFF_KEYS = {"sales_agent", "collector_agent", "budget_agent", "compliance_agent"}
 
 
 def is_ai_staff_key(agent_key: str) -> bool:
@@ -42,6 +44,8 @@ def _command_label(agent_key: str, command: str) -> str:
         ("accounting", "run_monthly_close"): "Cerrar período contable mensual",
         ("sales_agent", "run_deals"): "Ejecutar seguimiento de deals abiertos",
         ("collector_agent", "run_overdue"): "Ejecutar cobranza de facturas vencidas",
+        ("budget_agent", "run_budget_review"): "Revisar presupuesto vs. real y reportar desviaciones",
+        ("compliance_agent", "run_compliance_check"): "Revisar calendario fiscal y auditar CFDI",
     }
     return labels.get((agent_key, command), f"{command} para {agent_key}")
 

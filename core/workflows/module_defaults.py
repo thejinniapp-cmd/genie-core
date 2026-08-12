@@ -267,6 +267,110 @@ DEFAULT_MODULE_WORKFLOWS = {
                 }
             ],
         },
+        {
+            "name": "Proyección semanal de flujo de caja",
+            "description": "Proyecta el flujo de efectivo a 13 semanas y revisa concentración de clientes.",
+            "trigger_type": "event",
+            "trigger_config": {"event": "cash_weekly_forecast"},
+            "steps": [
+                {
+                    "name": "Calcular forecast y concentración",
+                    "description": "Genie Caja: forecast de 13 semanas + semáforo de concentración de clientes.",
+                    "step_order": 1,
+                    "type": "action",
+                    "advance_condition": "all_approved",
+                    "config": {"action": "cash_weekly_forecast"},
+                    "tasks": [
+                        {
+                            "name": "Generar proyección",
+                            "description": "Acción automática de Genie Caja",
+                            "input_type": "text",
+                            "assigned_to_role": "agent",
+                            "task_config": {},
+                        }
+                    ],
+                }
+            ],
+        },
+    ],
+    "control": [
+        {
+            "name": "Revisión semanal de presupuesto",
+            "description": "Compara presupuesto vs. real por cuenta y reporta desviaciones.",
+            "trigger_type": "event",
+            "trigger_config": {"event": "budget_weekly_review"},
+            "steps": [
+                {
+                    "name": "Calcular desviaciones de presupuesto",
+                    "description": "Compara erp_budgets contra erp_transactions del mes.",
+                    "step_order": 1,
+                    "type": "action",
+                    "advance_condition": "all_approved",
+                    "config": {"action": "control_budget_weekly_review"},
+                    "tasks": [
+                        {
+                            "name": "Revisar presupuesto",
+                            "description": "Acción automática del Agente de Presupuesto",
+                            "input_type": "text",
+                            "assigned_to_role": "agent",
+                            "task_config": {},
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "name": "Detección de cuello de botella del founder",
+            "description": "Detecta pasos que el founder resuelve repetidamente y sugiere delegar.",
+            "trigger_type": "event",
+            "trigger_config": {"event": "founder_bottleneck_detected"},
+            "steps": [
+                {
+                    "name": "Escanear dependencia del founder",
+                    "description": "Revisa workflow_steps asignados al founder en los últimos 90 días.",
+                    "step_order": 1,
+                    "type": "action",
+                    "advance_condition": "all_approved",
+                    "config": {"action": "control_founder_bottleneck_scan"},
+                    "tasks": [
+                        {
+                            "name": "Escanear cuellos de botella",
+                            "description": "Acción automática de Genie Control",
+                            "input_type": "text",
+                            "assigned_to_role": "agent",
+                            "task_config": {},
+                        }
+                    ],
+                }
+            ],
+        },
+    ],
+    "cumple": [
+        {
+            "name": "Revisión semanal de cumplimiento",
+            "description": "Revisa el calendario fiscal próximo a vencer y audita los CFDI importados.",
+            "trigger_type": "event",
+            "trigger_config": {"event": "cumple_weekly_check"},
+            "steps": [
+                {
+                    "name": "Calendario y auditoría de CFDI",
+                    "description": "Genie Cumple: obligaciones próximas a vencer + hallazgos de auditoría.",
+                    "step_order": 1,
+                    "type": "action",
+                    "advance_condition": "all_approved",
+                    "config": {"action": "cumple_weekly_check"},
+                    "tasks": [
+                        {
+                            "name": "Revisar cumplimiento",
+                            "description": "Acción automática de Genie Cumple",
+                            "input_type": "text",
+                            "assigned_to_role": "agent",
+                            "task_config": {},
+                        }
+                    ],
+                }
+            ],
+        },
     ],
 }
 

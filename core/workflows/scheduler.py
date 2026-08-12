@@ -72,6 +72,8 @@ def _module_tick_fn(module_key: str):
         "crm": tick_crm,
         "inventory": tick_inventory,
         "accounting": tick_accounting,
+        "control": tick_control,
+        "cumple": tick_cumple,
     }
     return mapping.get(module_key)
 
@@ -127,42 +129,56 @@ def start_event_run(org_id: str, module_key: str, event: str, input_data: dict,
 
 
 def tick_collections(org_id: str) -> List[dict]:
-    """Revisa facturas vencidas y dispara workflow de cobranza."""
+    """Revisa facturas vencidas y dispara workflow de cobranza + proyección semanal de flujo de caja."""
     if not _module_enabled(org_id, "collections"):
         return []
 
-    template = get_module_template_by_event(org_id, "collections", "invoice_overdue")
-    if not template:
-        return []
-
-    today_str = date.today().isoformat()
-    invoices = (
-        _db()
-        .table("erp_invoices")
-        .select("id, invoice_number, total, due_date, status")
-        .eq("org_id", org_id)
-        .in_("status", ["sent", "partial"])
-        .lt("due_date", today_str)
-        .execute()
-        .data
-        or []
-    )
-
     started = []
-    for inv in invoices:
-        invoice_id = inv["id"]
-        if _recent_run_exists(org_id, template["id"], invoice_id, days=7):
-            continue
-        run = start_event_run(
-            org_id=org_id,
-            module_key="collections",
-            event="invoice_overdue",
-            input_data={"invoice_id": invoice_id},
-            name=f"Cobranza vencida: {inv.get('invoice_number', 'S/N')}",
-            metadata={"invoice_id": invoice_id},
+
+    template = get_module_template_by_event(org_id, "collections", "invoice_overdue")
+    if template:
+        today_str = date.today().isoformat()
+        invoices = (
+            _db()
+            .table("erp_invoices")
+            .select("id, invoice_number, total, due_date, status")
+            .eq("org_id", org_id)
+            .in_("status", ["sent", "partial"])
+            .lt("due_date", today_str)
+            .execute()
+            .data
+            or []
         )
-        if run:
-            started.append({"invoice_id": invoice_id, "run_id": run.get("id")})
+        for inv in invoices:
+            invoice_id = inv["id"]
+            if _recent_run_exists(org_id, template["id"], invoice_id, days=7):
+                continue
+            run = start_event_run(
+                org_id=org_id,
+                module_key="collections",
+                event="invoice_overdue",
+                input_data={"invoice_id": invoice_id},
+                name=f"Cobranza vencida: {inv.get('invoice_number', 'S/N')}",
+                metadata={"invoice_id": invoice_id},
+            )
+            if run:
+                started.append({"invoice_id": invoice_id, "run_id": run.get("id")})
+
+    forecast_template = get_module_template_by_event(org_id, "collections", "cash_weekly_forecast")
+    if forecast_template:
+        iso_year, iso_week, _ = date.today().isocalendar()
+        if not _recent_run_for_week(org_id, forecast_template["id"], iso_year, iso_week):
+            run = start_event_run(
+                org_id=org_id,
+                module_key="collections",
+                event="cash_weekly_forecast",
+                input_data={},
+                name=f"Proyección semanal de flujo de caja - semana {iso_week}/{iso_year}",
+                metadata={"iso_year": iso_year, "iso_week": iso_week},
+            )
+            if run:
+                started.append({"run_id": run.get("id"), "event": "cash_weekly_forecast"})
+
     return started
 
 
@@ -361,6 +377,98 @@ def tick_accounting(org_id: str) -> List[dict]:
     return []
 
 
+def _recent_run_for_week(org_id: str, template_id: str, iso_year: int, iso_week: int) -> bool:
+    try:
+        rows = (
+            _db()
+            .table("workflow_runs")
+            .select("id, metadata")
+            .eq("org_id", org_id)
+            .eq("template_id", template_id)
+            .execute()
+            .data
+            or []
+        )
+        for row in rows:
+            meta = row.get("metadata") or {}
+            if meta.get("iso_year") == iso_year and meta.get("iso_week") == iso_week:
+                return True
+        return False
+    except Exception as e:
+        log.warning(f"[scheduler] Could not check week runs: {e}")
+        return False
+
+
+def tick_control(org_id: str) -> List[dict]:
+    """Revisión semanal de presupuesto + escaneo mensual de dependencia del founder."""
+    if not _module_enabled(org_id, "control"):
+        return []
+
+    started = []
+
+    budget_template = get_module_template_by_event(org_id, "control", "budget_weekly_review")
+    if budget_template:
+        iso_year, iso_week, _ = date.today().isocalendar()
+        if not _recent_run_for_week(org_id, budget_template["id"], iso_year, iso_week):
+            run = start_event_run(
+                org_id=org_id,
+                module_key="control",
+                event="budget_weekly_review",
+                input_data={},
+                name=f"Revisión semanal de presupuesto - semana {iso_week}/{iso_year}",
+                metadata={"iso_year": iso_year, "iso_week": iso_week},
+            )
+            if run:
+                started.append({"run_id": run.get("id"), "event": "budget_weekly_review"})
+
+    bottleneck_template = get_module_template_by_event(org_id, "control", "founder_bottleneck_detected")
+    if bottleneck_template:
+        today = date.today()
+        if today.month == 12:
+            last_day = today.replace(day=31)
+        else:
+            last_day = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+        if today == last_day and not _recent_run_for_period(org_id, bottleneck_template["id"], today.year, today.month):
+            run = start_event_run(
+                org_id=org_id,
+                module_key="control",
+                event="founder_bottleneck_detected",
+                input_data={},
+                name=f"Detección de cuello de botella del founder - {today.strftime('%B %Y')}",
+                metadata={"year": today.year, "month": today.month},
+            )
+            if run:
+                started.append({"run_id": run.get("id"), "event": "founder_bottleneck_detected"})
+
+    return started
+
+
+def tick_cumple(org_id: str) -> List[dict]:
+    """Revisión semanal de cumplimiento: calendario fiscal + auditoría de CFDI."""
+    if not _module_enabled(org_id, "cumple"):
+        return []
+
+    template = get_module_template_by_event(org_id, "cumple", "cumple_weekly_check")
+    if not template:
+        return []
+
+    iso_year, iso_week, _ = date.today().isocalendar()
+    if _recent_run_for_week(org_id, template["id"], iso_year, iso_week):
+        return []
+
+    run = start_event_run(
+        org_id=org_id,
+        module_key="cumple",
+        event="cumple_weekly_check",
+        input_data={},
+        name=f"Revisión semanal de cumplimiento - semana {iso_week}/{iso_year}",
+        metadata={"iso_year": iso_year, "iso_week": iso_week},
+    )
+    if run:
+        return [{"run_id": run.get("id"), "event": "cumple_weekly_check"}]
+    return []
+
+
 def _ai_staff_enabled(org_id: str, staff_key: str) -> bool:
     try:
         row = (
@@ -554,7 +662,7 @@ def tick_org(org_id: str, module_key: Optional[str] = None) -> dict:
     result["total_started"] += sum(p.get("started_count", 0) for p in processed if p.get("ok"))
 
     # Ticks normales de cada módulo (evitan duplicados con los comandos ya ejecutados)
-    for m in ["collections", "crm", "inventory", "accounting"]:
+    for m in ["collections", "crm", "inventory", "accounting", "control", "cumple"]:
         tick_fn = _module_tick_fn(m)
         if not tick_fn:
             continue
@@ -603,6 +711,8 @@ MODULE_TICK_FNS = {
     "crm": tick_crm,
     "inventory": tick_inventory,
     "accounting": tick_accounting,
+    "control": tick_control,
+    "cumple": tick_cumple,
 }
 
 

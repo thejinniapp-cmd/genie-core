@@ -7,7 +7,7 @@ import os
 from supabase import create_client
 from simpleeval import SimpleEval
 
-from core.workflows.actions import run_action
+from core.workflows.actions import run_action, sync_process_manual
 
 log = logging.getLogger("genie.workflow_engine")
 
@@ -176,6 +176,7 @@ def advance_run(run_id: str, org_id: str):
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", run_id).execute()
         log_event(org_id, run_id, "run.completed", "system")
+        sync_process_manual(org_id, run_id)
         return
 
     next_step_def = next_template_step[0]
